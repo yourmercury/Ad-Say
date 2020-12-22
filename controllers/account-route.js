@@ -6,11 +6,13 @@ const reqIp = require('request-ip');
 const geoip = require('geoip-lite');
 const parser = require('ua-parser-js');
 
+
+//middle-ware
 router.use(bodyParser.json());
 router.use(reqIp.mw());
 //router.use(bodyParser.urlencoded({ extended: true }));
 
-//                                                                                                                                                                                                              
+//jwt options                                                                                                                                                                                                           
 const JWT_OPT = {
     expiresIn: 60 * 60 * 24 * 10
 }
