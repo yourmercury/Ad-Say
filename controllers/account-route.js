@@ -5,12 +5,50 @@ const bcrypt = require('bcrypt');
 const reqIp = require('request-ip');
 const geoip = require('geoip-lite');
 const parser = require('ua-parser-js');
-
+const jwt = require('jsonwebtoken');
+const { isEmail } = require('validator')
 
 //middle-ware
 router.use(bodyParser.json());
 router.use(reqIp.mw());
-//router.use(bodyParser.urlencoded({ extended: true }));
+router.use('/signup', function (req, res, next) {
+    if (isEmail(req.body.email)) {
+        let query = `SELECT email FROM user WHERE email='${req.body.email}'`;
+
+        conn.query(query, (err, payload) => {
+            if (err) console.log(err);
+            else {
+                if (payload.length > 0) {
+                    console.log(false);
+                    res.json({ error: "user already exists with the email" })
+                } else {
+                    next();
+                }
+            }
+        });
+
+    } else {
+        console.log(false);
+        res.json({ error: 'this is not a valid enail address' });
+    }
+});
+
+
+//connect to database
+const conn = mysql.createConnection({
+    database: 'cheks',
+    user: 'root',
+    password: '',
+    host: 'localhost'
+});
+
+conn.connect((err) => {
+    if (err) {
+        console.log(err);
+    } else {
+        console.log('database connected');
+    }
+});
 
 //jwt options                                                                                                                                                                                                           
 const JWT_OPT = {
@@ -18,83 +56,103 @@ const JWT_OPT = {
 }
 
 
+router.get('/login', async function (req, res) {
+    if (isEmail(req.body.email)) {
+        let query = `SELECT password FROM user WHERE email='${req.body.email}'`;
+
+        conn.query(query, async (err, payload) => {
+            if (err) console.log(err);
+            else {
+                if (!payload.length > 0) {
+                    console.log(false);
+                    res.json({ error: "user does not exist", state: false })
+                } else {
+                    try {
+                        let password = req.body.password;
+
+
+                        //parse user agent to json
+                        let deviceInfo = parser(req.headers['user-agent']);
+
+                        //collect user-agent and ip;
+                        let user_agent = {
+                            ip: req.ip,
+                            agent: deviceInfo.device
+                        }
+
+                        /**
+                         * ** check if user agent equal user agent in database
+                         * ** if not equal, use an npm package to mail the user about it
+                         * ** replace user agent in database database of user
+                         */
+
+                        let user = await login(password, payload[0].password, req.body.email);
+                        let token = createJWT(user._id);
+                        res.cookie(process.env.LOGIN_COOKIE || 'jwt', token, { maxAge: JWT_OPT.expiresIn * 1000, httpOnly: true });
+
+                        /**
+                         * ** query full profile from db
+                         */
+
+                        res.status(200).json({ email: user.email }); //will send more fields
+                    }
+                    catch (err) {
+                        res.status(404).json({ error: "invalid password", state: false });
+                    }
+                }
+            }
+        });
+
+    } else {
+        res.json({ error: 'this is not a valid enail address', state: false });
+    }
+});
+
 
 //SIGN UP Routes
-router.post('/signup', (req, res) => {
-    let { email, userName, password, phone } = req.body;
+router.post('/signup', async (req, res) => {
+    let { email, userName, password, phone, id } = req.body;
+
+    let deviceInfo = parser(req.headers['user-agent']);
 
     //collect user agent
     let user_agent = {
         ip: req.ip,
-        agent: req.headers["user-agent"]
+        agent: deviceInfo.device
     }
-
 
     try {
         let salt = await bcrypt.genSalt();
         password = await bcrypt.hash(password, salt);
 
-        //store user in datatbase with user-agent
-        let user = {};
+        let query = 'INSERT INTO user(id, name, email, password, user_agent, user_type) '
+        query += `VALUES('${id}', '${userName}', '${email}', '${password}', '${JSON.stringify(user_agent)}', 'seller')`
 
-        let token = createJWT(user._id);
+        //store user in datatbase with user-agent;
+        conn.query(query, (err) => {
+            if (err) {
+                console.log(err);
+            } else {
+                console.log("user row created");
+            }
+        });
+
+        let token = createJWT(2);
         res.cookie(process.env.LOGIN_COOKIE || "jwt", token, { maxAge: JWT_OPT.expiresIn * 1000, httpOnly: true });
-        res.status(201).json({ user_name: user.userName, id: user._id, email: user.email });
+        res.status(201).json({ userName: userName, id: 2, email: email });
 
     } catch (err) {
         res.status(404).json({ error: err.message });
     }
 });
 
-
-
-// LOGIN Routes for checks
-router.get('login', (req, res) => {
-    //collect user-agent and ip
-    let user_agent = {
-        ip: req.ip,
-        agent: req.headers["user-agent"]
-    }
-    
-    let name = req.body.user_name;
-    let password = req.body.password;
-
-    try {
-        let user = await login(name, password, user_agent);
-        let token = createJWT(user._id);
-        res.cookie(process.env.LOGIN_COOKIE || 'jwt', token, { maxAge: JWT_OPT.expiresIn * 1000, httpOnly: true });
-        res.status(200).json({ user_name: user.userName, id: user._id, email: user.email });
-    }
-    catch (err) {
-        res.status(404).json({ err: err });
-    }
-});
-
-
-
-
-
 //login functon
-async function login(name, password, user_agent) {
-
-    //query username frodm database
-    let user = {};
-
-    if (user) {
-        let auth = await bcrypt.compare(password, user.password);
-        if (auth) {
-
-            /***
-             * *** compare user agent and Ip from data base,
-             * *** if they dont match, send mail to the user email and then replace the user-agent in the data base with the new one 
-             */
-
-            return user;
-        } else {
-            throw Error("wrong password")
-        }
+async function login(password, pass2, email) {
+    let auth = await bcrypt.compare(password, pass2);
+    if (auth) {
+        return { email: email, password: password };
     } else {
-        throw Error("No user found")
+        throw Error("wrong password");
     }
 }
 
@@ -102,3 +160,6 @@ async function login(name, password, user_agent) {
 function createJWT(id) {
     return jwt.sign({ id }, process.env.SECRET || 'checks', JWT_OPT);
 }
+
+
+module.exports = router;
